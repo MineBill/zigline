@@ -84,7 +84,27 @@ const Readline = struct {
     fn refreshScreen(self: *Self) !void {
         const writer = self.tty.writer();
 
-        try writer.writeAll("\x1b[0E");
+        const cursor: Point = blk: {
+            try writer.writeAll("\x1b[6n");
+
+            var buf: [8]u8 = undefined;
+            const response = try self.tty.reader().readUntilDelimiter(&buf, 'R');
+
+            const seperator = std.mem.indexOf(u8, response, ";").?;
+            const line_str = response[2..seperator];
+            const col_str = response[seperator + 1 ..];
+
+            const line = try std.fmt.parseInt(u16, line_str, 10);
+            const col = try std.fmt.parseInt(u16, col_str, 10);
+
+            break :blk Point{
+                .x = col,
+                .y = line,
+            };
+        };
+
+        // try writer.writeAll("\x1b[6n");
+        try writer.print("\x1b[{};1H", .{cursor.y});
         try writer.writeAll("\x1b[2K");
         try writer.writeAll(self.prompt);
         try writer.writeAll(self.output[0..self.index]);
@@ -117,6 +137,23 @@ fn restoreTerminal(tty: fs.File, original_state: os.termios) !void {
     const writer = tty.writer();
     try writer.writeAll("\x1B[0m"); // Atribute reset
     try os.tcsetattr(tty.handle, .FLUSH, original_state);
+}
+
+const Point = struct {
+    x: u16,
+    y: u16,
+};
+
+fn size(tty: fs.File) !Point {
+    var win_size = std.mem.zeroes(os.system.winsize);
+    const err = os.system.ioctl(tty.handle, os.system.T.IOCGWINSZ, @ptrToInt(&win_size));
+    if (os.errno(err) != .SUCCESS) {
+        return os.unexpectedErrno(@intToEnum(os.system.E, err));
+    }
+    return Point{
+        .x = win_size.ws_col,
+        .y = win_size.ws_row,
+    };
 }
 
 pub fn readline(allocator: std.mem.Allocator, prompt: []const u8, output: []u8) !?usize {
