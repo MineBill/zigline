@@ -144,18 +144,6 @@ const Point = struct {
     y: u16,
 };
 
-fn size(tty: fs.File) !Point {
-    var win_size = std.mem.zeroes(os.system.winsize);
-    const err = os.system.ioctl(tty.handle, os.system.T.IOCGWINSZ, @ptrToInt(&win_size));
-    if (os.errno(err) != .SUCCESS) {
-        return os.unexpectedErrno(@intToEnum(os.system.E, err));
-    }
-    return Point{
-        .x = win_size.ws_col,
-        .y = win_size.ws_row,
-    };
-}
-
 pub fn readline(allocator: std.mem.Allocator, prompt: []const u8, output: []u8) !?usize {
     _ = output;
     _ = prompt;
