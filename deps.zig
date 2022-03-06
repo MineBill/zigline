@@ -51,12 +51,17 @@ fn checkMinZig(current: std.SemanticVersion, exe: *std.build.LibExeObjStep) void
 pub const dirs = struct {
     pub const _root = "";
     pub const _b0ov9fnwyq9x = cache ++ "/../..";
+    pub const _7zwuaufp9upt = cache ++ "/git/file:///home/minebill/git/ansi-term";
 };
 
 pub const package_data = struct {
+    pub const _7zwuaufp9upt = Package{
+        .directory = dirs._7zwuaufp9upt,
+        .pkg = Pkg{ .name = "ansi-term", .path = .{ .path = dirs._7zwuaufp9upt ++ "/src/main.zig" }, .dependencies = null },
+    };
     pub const _b0ov9fnwyq9x = Package{
         .directory = dirs._b0ov9fnwyq9x,
-        .pkg = Pkg{ .name = "readline", .path = .{ .path = dirs._b0ov9fnwyq9x ++ "/src/lib.zig" }, .dependencies = null },
+        .pkg = Pkg{ .name = "readline", .path = .{ .path = dirs._b0ov9fnwyq9x ++ "/src/lib.zig" }, .dependencies = &.{ _7zwuaufp9upt.pkg.? } },
     };
     pub const _root = Package{
         .directory = dirs._root,

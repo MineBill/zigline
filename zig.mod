@@ -4,3 +4,5 @@ main: src/lib.zig
 license: MIT
 description: A simple readline package
 dependencies:
+  - src: git file:///home/minebill/git/ansi-term
+# vim:ft=yaml
