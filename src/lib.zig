@@ -1,10 +1,43 @@
 const std = @import("std");
+const ansi = @import("ansi-term");
 const os = std.os;
 const fs = std.fs;
 
-const Cursor = struct {
-    x: u32,
-    y: u32,
+const ControlCode = union(enum) {
+    newline,
+    backspace,
+    end_of_file,
+    escape,
+    left,
+    right,
+    up,
+    down,
+    character: u8,
+
+    fn fromReader(reader: anytype) !ControlCode {
+        const byte = try reader.readByte();
+        switch (byte) {
+            'q' => return .end_of_file,
+            '\x1b' => {
+                const bracket = try reader.readByte();
+                const code = try reader.readByte();
+                if (bracket == '[') {
+                    switch (code) {
+                        'A' => return .up,
+                        'B' => return .down,
+                        'C' => return .right,
+                        'D' => return .left,
+                        else => return error.UnimplementedControlCode,
+                    }
+                }
+                return .escape;
+            },
+            '\r' => return .newline,
+            127 => return .backspace,
+            else => |char| return ControlCode{ .character = char },
+        }
+        unreachable;
+    }
 };
 
 const Readline = struct {
@@ -12,20 +45,22 @@ const Readline = struct {
 
     termios: os.termios,
     tty: fs.File,
-    cursor: Cursor,
+    cursor: ansi.Cursor,
     prompt: []const u8,
     output: []u8,
     index: usize,
+    line_legth: usize,
 
     pub fn init(tty: fs.File, promt: []const u8, output: []u8) !Self {
         const original_termios = try initTerminal(tty);
         return Self{
             .termios = original_termios,
             .tty = tty,
-            .cursor = Cursor{ .x = 0, .y = 0 },
+            .cursor = ansi.Cursor{ .x = 0, .y = 0 },
             .prompt = promt,
             .output = output,
             .index = 0,
+            .line_legth = 0,
         };
     }
 
@@ -37,77 +72,89 @@ const Readline = struct {
         try self.refreshScreen();
         const writer = self.tty.writer();
         while (true) {
-            var buffer: [1]u8 = undefined;
-            _ = try self.tty.read(&buffer);
-
-            switch (buffer[0]) {
-                'q' => return null,
-                '\x1b' => {
-                    const bracket = try self.tty.reader().readByte();
-                    const code = try self.tty.reader().readByte();
-                    if (bracket == '[') {
-                        switch (code) {
-                            'A' => {},
-                            'B' => {},
-                            'C' => {},
-                            'D' => {},
-                            else => {},
-                        }
-                    }
-                },
-                '\r' => {
-                    try writer.writeAll("\r\n");
-                    break;
-                },
-                127 => {
+            const code = try ControlCode.fromReader(self.tty.reader());
+            switch (code) {
+                .escape, .end_of_file => return null,
+                .backspace => {
                     if (self.index > 0) {
                         self.index -= 1;
                         try self.refreshScreen();
                     }
                 },
-                else => |byte| {
-                    try writer.writeByte(byte);
-                    self.output[self.index] = byte;
+                .newline => {
+                    try writer.writeAll("\r\n");
+                    break;
+                },
+                .up => {},
+                .down => {},
+                .left => {
+                    const cursor = try ansi.getCursor(writer, self.tty);
+                    if (cursor.x > self.prompt.len + 1) {
+                        try ansi.cursorBackward(writer, 1);
+
+                        if (self.index > 0)
+                            self.index -= 1;
+                    }
+                    //> |
+                },
+                .right => {
+                    const cursor = try ansi.getCursor(writer, self.tty);
+                    if (cursor.x <= self.index + self.prompt.len) {
+                        try ansi.cursorForward(writer, 1);
+                        self.index += 1;
+                    }
+                },
+                .character => |char| {
+                    if (self.line_legth + 1 >= self.output.len) {
+                        return error.LineLengthExceeded;
+                    }
+                    if (self.line_legth == self.index) {
+                        self.output[self.line_legth] = char;
+                    } else {
+                        var i: usize = self.line_legth;
+                        while (i > self.index) : (i -= 1) {
+                            self.output[i] = self.output[i - 1];
+                        }
+                        self.output[self.index] = char;
+                    }
                     self.index += 1;
+                    self.line_legth += 1;
+                    try self.refreshScreen();
                 },
             }
         }
-        return self.index;
+        return self.line_legth;
     }
 
-    fn move(self: *Self, new_x: u32, new_y: u32) !void {
-        self.cursor.x = new_x;
-        self.cursor.y = new_y;
-        _ = try self.tty.writer().print("\x1b[{};{}H", .{ self.cursor.y + 1, self.cursor.x + 1 });
+    fn moveCursor(self: *Self, new_x: i32, new_y: i32) !void {
+        if (new_x < 0) {
+            self.cursor.x = 0;
+        } else {
+            self.cursor.x = @intCast(u16, new_x);
+        }
+        if (new_y < 0) {
+            self.cursor.y = 0;
+        } else {
+            self.cursor.y = @intCast(u16, new_y);
+        }
+        try ansi.setCursor(self.tty.writer(), self.cursor.x, self.cursor.y);
+    }
+
+    fn moveCursorRel(self: *Self, x: i32, y: i32) !void {
+        try self.moveCursor(self.cursor.x + x, self.cursor.y + y);
     }
 
     fn refreshScreen(self: *Self) !void {
         const writer = self.tty.writer();
 
-        const cursor: Point = blk: {
-            try writer.writeAll("\x1b[6n");
+        const cursor = try ansi.getCursor(writer, self.tty);
 
-            var buf: [8]u8 = undefined;
-            const response = try self.tty.reader().readUntilDelimiter(&buf, 'R');
-
-            const seperator = std.mem.indexOf(u8, response, ";").?;
-            const line_str = response[2..seperator];
-            const col_str = response[seperator + 1 ..];
-
-            const line = try std.fmt.parseInt(u16, line_str, 10);
-            const col = try std.fmt.parseInt(u16, col_str, 10);
-
-            break :blk Point{
-                .x = col,
-                .y = line,
-            };
-        };
-
-        // try writer.writeAll("\x1b[6n");
         try writer.print("\x1b[{};1H", .{cursor.y});
         try writer.writeAll("\x1b[2K");
         try writer.writeAll(self.prompt);
-        try writer.writeAll(self.output[0..self.index]);
+        try writer.writeAll(self.output[0..self.line_legth]);
+
+        self.cursor = try ansi.getCursor(writer, self.tty);
     }
 };
 
@@ -138,11 +185,6 @@ fn restoreTerminal(tty: fs.File, original_state: os.termios) !void {
     try writer.writeAll("\x1B[0m"); // Atribute reset
     try os.tcsetattr(tty.handle, .FLUSH, original_state);
 }
-
-const Point = struct {
-    x: u16,
-    y: u16,
-};
 
 pub fn readline(allocator: std.mem.Allocator, prompt: []const u8, output: []u8) !?usize {
     _ = output;
